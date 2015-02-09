@@ -1,0 +1,6 @@
+tags:
+  host: example.com
+
+collectors:
+  cpu.py:
+    hello: world

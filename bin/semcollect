@@ -1,0 +1,28 @@
+#!/bin/bash
+
+PYTHONPATH=""
+PYTHON=""
+
+if python -c 'import sys; sys.exit(not (sys.hexversion >= 0x3030000 and sys.hexversion <= 0x3040000))' 2>/dev/null; then
+    PYTHON=python
+else
+    for V in 3.4 3.3; do
+        if which python$V > /dev/null 2>&1; then
+            PYTHON=python$V
+            break;
+        fi
+    done
+fi
+
+if [[ -z $PYTHON ]]; then
+    echo "No suitable python interpreter found"
+    exit 1
+fi
+
+ROOT=$(dirname $(dirname $0))
+
+if [[ -d $ROOT/semcollect ]]; then
+    PYTHONPATH=$ROOT
+fi
+
+exec env PYTHONPATH="$PYTHONPATH" $PYTHON -m semcollect.__main__ "$@"
