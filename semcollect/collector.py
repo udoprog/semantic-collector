@@ -1,6 +1,7 @@
-import os.path
 import logging
+import signal
 import sys
+import os.path
 import multiprocessing as mp
 
 log = logging.getLogger(__name__)
@@ -8,13 +9,14 @@ log = logging.getLogger(__name__)
 
 class Collector(object):
     class Instance(object):
-        def __init__(self, name, p, pipe, **kw):
+        def __init__(self, name, p, pipe, stat, **kw):
             # if not None, the current running process.
             self._name = name
             self._p = p
             self._pipe = pipe
             self._runs = 0
             self._errors = 0
+            self._stat = stat
             # number of collections until the process will be recycled
             self._max_runs = kw.get('max_runs', 10000)
             # number of errors allowed until the process will be recycled
@@ -26,6 +28,9 @@ class Collector(object):
             self._forceful_timeout = kw.get('forceful_timeout', 2.0)
             # maximum number of forceful attempts allowed.
             self._max_forceful_attempts = kw.get('max_forceful_attempts', 5)
+
+        def stat(self):
+            return self._stat
 
         def is_alive(self):
             return self._p.is_alive()
@@ -78,27 +83,28 @@ class Collector(object):
         def __str__(self):
             return "{0}:{1}".format(self._name, self._p.pid)
 
-    def __init__(self, name, out, scope, collect, **kw):
-        self._name = name
+    def __init__(self, path, out, scope, instance_config):
+        self._path = path
         self._out = out
         self._scope = scope
-        self._collect = collect
+        self._instance_config = instance_config
+        self._name = os.path.basename(path)
         self._inst = None
-        self.instance_kw = kw
+        self._stat = None
 
     def errored(self, count=1):
         self._inst.errored(count)
 
     def collect(self, i):
         if self._inst is None:
-            raise Exception('instance not running')
+            self._inst = self._start()
 
         if not self._inst.is_alive():
             log.error('%s: no longer alive, restarting',
                       self._inst)
             self.restart(False)
 
-        if self._inst.needs_recycling():
+        if self._is_outdated() or self._inst.needs_recycling():
             log.info('%s: recycling', self._inst)
             self.restart(True)
 
@@ -108,62 +114,69 @@ class Collector(object):
         if self._inst is None:
             raise Exception('instance not running')
 
-        self._inst.terminate(graceful)
-        self._inst = self._instance()
-
-    def start(self):
-        if self._inst is not None:
-            raise Exception('instance already running')
-
-        self._inst = self._instance()
+        previous = self._inst
+        self._inst = self._start()
+        previous.terminate(graceful)
 
     def stop(self):
         """
         Stop the collector.
         """
         if self._inst is None:
-            raise Exception('instance not running')
+            raise Exception('{0}: no instance running'.format(self))
 
         self._scope.free()
         self._inst.terminate(True)
         self._inst = None
 
-    def _instance(self):
+    def _is_outdated(self):
+        """
+        Checks stat on the process file to see if it is newer than when the
+        process was loaded.
+
+        @return True if the current collector instance is outdated, False
+                otherwise.
+        """
+        return self._inst.stat() != limited_stat(self._path)
+
+    def _compile(self):
+        scope = dict()
+
+        with open(self._path) as f:
+            code = compile(f.read(), self._path, 'exec')
+            exec(code, scope)
+
+        return scope
+
+    def _start(self):
+        log.info('%s: starting', self)
+
+        stat = limited_stat(self._path)
+
+        scope = self._compile()
+
+        setup = scope.get('setup', None)
+
+        if setup is None:
+            raise Exception('{0}: no #setup method found'.format(self._path))
+
+        collect = setup(self._scope)
+
+        if collect is None:
+            raise Exception(
+                '{0}: #setup must not return None'.format(self._path))
+
+        start = getattr(collect, 'start', None)
+        stop = getattr(collect, 'stop', None)
+
         inp, out = mp.Pipe(False)
 
         p = mp.Process(target=instance_loop,
-                       args=(self._name, inp, self._out, self._collect),
+                       args=(self._name, inp, self._out, start, stop, collect),
                        name=self._name)
         p.start()
 
-        return Collector.Instance(self._name, p, out, **self.instance_kw)
-
-    @classmethod
-    def load(cls, path, out, scope, **kw):
-        """
-        Load a collector from the given path.
-        """
-
-        log.info('%s: loading', path)
-
-        lcl = dict()
-
-        with open(path) as f:
-            code = compile(f.read(), path, 'exec')
-            exec(code, lcl)
-
-        setup = lcl.get('setup', None)
-
-        if setup is None:
-            raise Exception('{0}: no #setup method found'.format(path))
-
-        collect = setup(scope)
-
-        if collect is None:
-            return None
-
-        name = os.path.basename(path)
-        return cls(name, out, scope, collect, **kw)
+        return Collector.Instance(self._name, p, out, stat, **self._instance_config)
 
     def __str__(self):
         if self._inst is not None:
@@ -172,7 +185,28 @@ class Collector(object):
         return '{0}:<no instance>'.format(self._name)
 
 
-def instance_loop(name, inp, out, collect):
+def limited_stat(path):
+    s = os.stat(path)
+    return (s.st_size, s.st_mtime)
+
+
+def instance_loop(name, inp, out, start, stop, collect):
+    name = "{0}:{1}".format(name, os.getpid())
+
+    def _handle_term(sig, frame):
+        log.warn("%s: terminating (by signal)", name)
+        sys.exit(1)
+
+    # Handle SIGTERM because it signals a forced terminate by manager process.
+    signal.signal(signal.SIGTERM, _handle_term)
+
+    if start is not None:
+        try:
+            start()
+        except:
+            log.error('%s: failed to start', name, exc_info=sys.exc_info())
+            sys.exit(1)
+
     while True:
         try:
             i = inp.recv()
@@ -186,10 +220,16 @@ def instance_loop(name, inp, out, collect):
 
         try:
             collect()
-        except:
-            log.error('collector failed', exc_info=sys.exc_info())
+        except Exception as e:
+            log.error('%s: collector failed: %s', name, e)
             out.put((i, False))
         else:
             out.put((i, True))
+
+    if stop is not None:
+        try:
+            stop()
+        except:
+            log.error('%s: failed to stop', name, exc_info=sys.exc_info())
 
     sys.exit(0)

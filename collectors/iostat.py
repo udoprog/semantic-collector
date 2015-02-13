@@ -6,13 +6,13 @@ import time
 class LinuxIOStat(object):
     PROC_DISKSTATS = '/proc/diskstats'
 
-    FIELDS = [
+    DISK_STAT_FIELDS = [
         'rd_ios', 'rd_merges', 'rd_sectors', 'rd_tics',
         'wr_ios', 'wr_merges', 'wr_sectors', 'wr_tics',
         'ios_pgr', 'tot_tics', 'rq_tics'
     ]
 
-    disk_stat = collections.namedtuple('disk_stat', FIELDS)
+    disk_stat = collections.namedtuple('disk_stat', DISK_STAT_FIELDS)
 
     @classmethod
     def verify(cls):
@@ -32,8 +32,8 @@ class LinuxIOStat(object):
                 device = parts[2]
                 rest = parts[3:]
 
-                if len(rest) != len(cls.FIELDS):
-                    raise Exception("expected fields on first line")
+                if len(rest) != len(cls.DISK_STAT_FIELDS):
+                    raise Exception("expected DISK_STAT_FIELDS on first line")
 
                 disks[device] = cls.disk_stat(*(map(int, parts[3:])))
 
@@ -43,7 +43,7 @@ class LinuxIOStat(object):
         self.iostats = dict()
 
         for device in last.keys():
-            for field in self.FIELDS:
+            for field in self.DISK_STAT_FIELDS:
                 self.iostats[(device, field)] = registry.metric(
                     what='iostat-{0}'.format(field.replace('_', '-')),
                     device=device)
@@ -70,7 +70,7 @@ class LinuxIOStat(object):
             d = self.disk_stat(
                 *((a - b) / diff for (a, b) in zip(s1, s2)))
 
-            for v, field in zip(d, self.FIELDS):
+            for v, field in zip(d, self.DISK_STAT_FIELDS):
                 try:
                     m = self.iostats[(device, field)]
                 except KeyError:

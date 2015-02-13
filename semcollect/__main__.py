@@ -68,7 +68,7 @@ def setup_parser(root):
         type=float)
 
     parser.add_argument(
-        "-D", "--debug",
+        "--debug",
         dest="level",
         help="Enable debug logging",
         default=logging.INFO,

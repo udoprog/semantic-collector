@@ -13,6 +13,8 @@ from semcollect.collector import Collector
 
 log = logging.getLogger(__name__)
 
+TASK_MOD = 2 ** 20
+
 
 class Core(object):
     def __init__(self, ns):
@@ -21,6 +23,7 @@ class Core(object):
         self._collectors = None
         self._registry = None
         self._signalled = False
+        self._taskid = 0
 
     def signalled(self):
         self._signalled = True
@@ -50,8 +53,14 @@ class Core(object):
     def run_all(self):
         collects = dict()
 
-        for i, c in enumerate(self._collectors):
-            if c.collect(i) is None:
+        for c in self._collectors:
+            i = self._taskid
+            self._taskid = (self._taskid + 1) % TASK_MOD
+
+            try:
+                c.collect(i)
+            except Exception:
+                log.error('%s: failed to collect', c, exc_info=sys.exc_info())
                 continue
 
             collects[i] = c
@@ -59,7 +68,7 @@ class Core(object):
         time_left = self._ns.timeout
         then = time.time()
 
-        for _ in range(len(collects)):
+        while len(collects) > 0:
             if time_left <= 0:
                 break
 
@@ -87,6 +96,15 @@ class Core(object):
         for i, c in collects.items():
             log.warn('%s: timeout (task %d)', c, i)
             c.restart()
+
+        # empty output queue for straggling processes.
+        # at this point, all processes which were not part of the current
+        # collection must be dead.
+        while True:
+            try:
+                self._out.get_nowait()
+            except queue.Empty:
+                break
 
     def run_once(self):
         self._signalled = False
@@ -125,10 +143,14 @@ class Core(object):
         registry = Registry(**config.get('tags', {}))
         scope = Scope(collectors, registry, components)
 
-        collectors = self._load_collectors(registry, scope)
+        blacklist = set(config.get('blacklist', []))
+        instance_config = config.get('instance_config', {})
+
+        collectors = self._load_collectors(registry, scope, blacklist,
+                                           instance_config)
         return collectors, registry
 
-    def _load_collectors(self, registry, scope, **kw):
+    def _load_collectors(self, registry, scope, blacklist, instance_config):
         collectors = []
 
         for p in self._ns.collectors:
@@ -145,21 +167,12 @@ class Core(object):
                 s = scope.collector(name)
 
                 try:
-                    collector = Collector.load(path, self._out, s, **kw)
+                    c = Collector(path, self._out, s, instance_config)
                 except:
-                    log.error('%s: failed to load collector', path,
-                              exc_info=sys.exc_info())
-                    continue
-
-                if collector is None:
                     s.free()
-                    continue
+                    raise
 
-                collectors.append(collector)
-
-        # start all previously loaded collectors
-        for c in collectors:
-            c.start()
+                collectors.append(c)
 
         return collectors
 

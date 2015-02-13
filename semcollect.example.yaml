@@ -1,0 +1,22 @@
+tags:
+  host: example.com
+
+blacklist:
+  iostat.py
+
+instance_config:
+  # number of collections until the process will be recycled
+  max_runs: 5000
+  # number of errors allowed until the process will be recycled
+  max_errors: 5
+  # allowed timeout for a graceful shutdown to occur.
+  graceful_timeout: 2.0
+  # allowed timeout for a forceful shutdown to occur, failure to
+  # perform a forceful shutdown will crash the collector.
+  forceful_timeout: 2.0
+  # maximum number of forceful attempts allowed.
+  max_forceful_attempts: 5
+
+collectors:
+  cpu.py:
+    hello: world

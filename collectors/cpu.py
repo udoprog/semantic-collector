@@ -47,6 +47,12 @@ class LinuxCPU(object):
 
         self.last = last
 
+    def start(self):
+        print('Starting CPU collector')
+
+    def stop(self):
+        print('Stopping CPU collector')
+
     def __call__(self):
         s = self.read_cpu()
         diff = sum(s) - sum(self.last)
