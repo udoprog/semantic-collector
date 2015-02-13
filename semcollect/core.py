@@ -10,18 +10,11 @@ from .registry import Registry
 from .injector import Injector
 from .platform import Platform
 from .collector import Collector
+from .config import Root
 
 log = logging.getLogger(__name__)
 
 TASK_MOD = 2 ** 20
-
-POLICY_ALL = 1
-POLICY_CONFIGURED = 2
-
-collector_policies = {
-    'configured': POLICY_CONFIGURED,
-    'all': POLICY_ALL
-}
 
 
 class Core(object):
@@ -144,6 +137,7 @@ class Core(object):
 
     def _setup(self):
         config = load_config(self._ns.config)
+        root = Root.load(config)
 
         configured = config.get('collectors', {})
         registry = Registry(**config.get('tags', {}))
