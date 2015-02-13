@@ -6,14 +6,22 @@ import sys
 import time
 import queue
 
-from semcollect.registry import Registry
-from semcollect.scope import Scope
-from semcollect.platform import Platform
-from semcollect.collector import Collector
+from .registry import Registry
+from .injector import Injector
+from .platform import Platform
+from .collector import Collector
 
 log = logging.getLogger(__name__)
 
 TASK_MOD = 2 ** 20
+
+POLICY_ALL = 1
+POLICY_CONFIGURED = 2
+
+collector_policies = {
+    'configured': POLICY_CONFIGURED,
+    'all': POLICY_ALL
+}
 
 
 class Core(object):
@@ -137,21 +145,49 @@ class Core(object):
     def _setup(self):
         config = load_config(self._ns.config)
 
-        components = dict(platform=Platform())
-        collectors = config.get('collectors', {})
-
+        configured = config.get('collectors', {})
         registry = Registry(**config.get('tags', {}))
-        scope = Scope(collectors, registry, components)
 
-        blacklist = set(config.get('blacklist', []))
+        components = dict(platform=Platform(), registry=registry)
+        injector = Injector(components)
+
         instance_config = config.get('instance_config', {})
 
-        collectors = self._load_collectors(registry, scope, blacklist,
-                                           instance_config)
+        known = self._load_collectors()
+
+        collectors = self._build_collectors(
+            known, configured, injector, instance_config)
+
         return collectors, registry
 
-    def _load_collectors(self, registry, scope, blacklist, instance_config):
+    def _build_collectors(self, known, configured, injector,
+                          instance_config):
         collectors = []
+
+        for c in configured:
+            c = dict(c)
+
+            type = c.pop('type', None)
+
+            if type is None:
+                raise Exception(
+                    "'type' is required in collector configuration")
+
+            path = known.get(type, None)
+
+            if path is None:
+                raise Exception(
+                    "'{0}' is not a known collector type".format(type))
+
+            child = injector.child(dict(config=c))
+            collector = Collector(
+                path, type, self._out, child, instance_config)
+            collectors.append(collector)
+
+        return collectors
+
+    def _load_collectors(self):
+        collectors = dict()
 
         for p in self._ns.collectors:
             if not os.path.isdir(p):
@@ -162,17 +198,9 @@ class Core(object):
                     continue
 
                 path = os.path.join(p, n)
-                name = os.path.basename(path)
+                name, _ = os.path.splitext(n)
 
-                s = scope.collector(name)
-
-                try:
-                    c = Collector(path, self._out, s, instance_config)
-                except:
-                    s.free()
-                    raise
-
-                collectors.append(c)
+                collectors[name] = path
 
         return collectors
 

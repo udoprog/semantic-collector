@@ -1,9 +1,6 @@
 tags:
   host: example.com
 
-blacklist:
-  iostat.py
-
 instance_config:
   # number of collections until the process will be recycled
   max_runs: 5000
@@ -18,5 +15,4 @@ instance_config:
   max_forceful_attempts: 5
 
 collectors:
-  cpu.py:
-    hello: world
+  - type: cpu

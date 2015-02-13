@@ -70,7 +70,7 @@ class LinuxCPU(object):
 
 
 def setup(scope):
-    #config = scope.require('config')
+    config = scope.require('config')
     platform = scope.require('platform')
 
     if platform.is_linux():

@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 
 class Collector(object):
     class Instance(object):
-        def __init__(self, name, p, pipe, stat, **kw):
+        def __init__(self, name, p, pipe, stat, injector, **kw):
             # if not None, the current running process.
             self._name = name
             self._p = p
@@ -17,6 +17,7 @@ class Collector(object):
             self._runs = 0
             self._errors = 0
             self._stat = stat
+            self._injector = injector
             # number of collections until the process will be recycled
             self._max_runs = kw.get('max_runs', 10000)
             # number of errors allowed until the process will be recycled
@@ -67,8 +68,8 @@ class Collector(object):
                 attempt += 1
 
             log.info("%s: exited=%d", self.__str__(), self._p.exitcode)
-            self._runs = 0
-            self._errors = 0
+
+            self._injector.free()
             self._pipe.close()
 
         def needs_recycling(self):
@@ -83,14 +84,13 @@ class Collector(object):
         def __str__(self):
             return "{0}:{1}".format(self._name, self._p.pid)
 
-    def __init__(self, path, out, scope, instance_config):
+    def __init__(self, path, name, out, injector, instance_config):
         self._path = path
         self._out = out
-        self._scope = scope
+        self._injector = injector
         self._instance_config = instance_config
-        self._name = os.path.basename(path)
+        self._name = name
         self._inst = None
-        self._stat = None
 
     def errored(self, count=1):
         self._inst.errored(count)
@@ -114,9 +114,8 @@ class Collector(object):
         if self._inst is None:
             raise Exception('instance not running')
 
-        previous = self._inst
+        self._inst.terminate(graceful)
         self._inst = self._start()
-        previous.terminate(graceful)
 
     def stop(self):
         """
@@ -125,9 +124,9 @@ class Collector(object):
         if self._inst is None:
             raise Exception('{0}: no instance running'.format(self))
 
-        self._scope.free()
         self._inst.terminate(True)
         self._inst = None
+        self._injector.free()
 
     def _is_outdated(self):
         """
@@ -160,7 +159,8 @@ class Collector(object):
         if setup is None:
             raise Exception('{0}: no #setup method found'.format(self._path))
 
-        collect = setup(self._scope)
+        injector = self._injector.child()
+        collect = setup(injector)
 
         if collect is None:
             raise Exception(
@@ -176,7 +176,8 @@ class Collector(object):
                        name=self._name)
         p.start()
 
-        return Collector.Instance(self._name, p, out, stat, **self._instance_config)
+        return Collector.Instance(self._name, p, out, stat, injector,
+                                  **self._instance_config)
 
     def __str__(self):
         if self._inst is not None:
@@ -186,11 +187,17 @@ class Collector(object):
 
 
 def limited_stat(path):
+    """
+    Perform a stat that only includes size and last modification time.
+    """
     s = os.stat(path)
     return (s.st_size, s.st_mtime)
 
 
 def instance_loop(name, inp, out, start, stop, collect):
+    """
+    Process loop for a single instance.
+    """
     name = "{0}:{1}".format(name, os.getpid())
 
     def _handle_term(sig, frame):

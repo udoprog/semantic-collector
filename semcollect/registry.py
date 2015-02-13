@@ -25,6 +25,9 @@ class Registry(object):
 
             self._group = []
 
+        def _injectchild(self):
+            return Registry.Group(self._registry)
+
     NaN = float('NaN')
 
     def __init__(self, **tags):
@@ -33,7 +36,7 @@ class Registry(object):
         self._tags = dict()
         self._base = dict(tags)
 
-    def group(self):
+    def _injectchild(self):
         return Registry.Group(self)
 
     def metric(self, **tags):

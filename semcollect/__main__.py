@@ -105,7 +105,6 @@ def main(args):
 
     while True:
         if signal_terminate:
-            log.info('shutting down')
             core.stop()
             break
 
