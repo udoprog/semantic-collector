@@ -126,10 +126,10 @@ class Core(object):
 
         if log.isEnabledFor(logging.DEBUG):
             for tags, v in self._registry.values:
-                if v is None:
-                    log.debug("%s: None", tags)
-                else:
-                    log.debug("%s: %0.2f", tags, v)
+                log.debug("%s: %0.2f", tags, v)
+
+            for tags, v in self._registry.states:
+                log.debug("%s: %s", tags, v)
 
         diff = next_run - time.time()
 
