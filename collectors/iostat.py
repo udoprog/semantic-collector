@@ -12,7 +12,10 @@ class LinuxIOStat(object):
         'ios_pgr', 'tot_tics', 'rq_tics'
     ]
 
-    disk_stat = collections.namedtuple('disk_stat', DISK_STAT_FIELDS)
+    # skip ram=1, and loop=7
+    SKIP_MAJOR = set([1, 7])
+
+    disk = collections.namedtuple('disk', DISK_STAT_FIELDS)
 
     @classmethod
     def verify(cls):
@@ -29,65 +32,121 @@ class LinuxIOStat(object):
             for line in f:
                 line = line.strip()
                 parts = line.split()
+                major = int(parts[0])
                 device = parts[2]
                 rest = parts[3:]
+
+                # disk block devices
+                if major in cls.SKIP_MAJOR:
+                    continue
 
                 if len(rest) != len(cls.DISK_STAT_FIELDS):
                     raise Exception("expected DISK_STAT_FIELDS on first line")
 
-                disks[device] = cls.disk_stat(*(map(int, parts[3:])))
+                disks[device] = cls.disk(*(map(int, parts[3:])))
 
         return disks
 
-    def __init__(self, registry, last):
+    def __init__(self, registry, last, reload_latch):
         self.iostats = dict()
+        self.reload_latch = reload_latch
 
         for device in last.keys():
-            for field in self.DISK_STAT_FIELDS:
-                self.iostats[(device, field)] = registry.metric(
-                    what='iostat-{0}'.format(field.replace('_', '-')),
-                    device=device)
+            io = self.iostats[device] = dict()
 
+            reg = registry.scoped(device=device)
+
+            io['rd-op'] = reg.metric(
+                what='io-read-operations', unit='operation/s')
+            io['rd-merges'] = reg.metric(
+                what='io-read-merges', unit='merge/s')
+            io['rd-bytes'] = reg.metric(
+                what='io-read-bytes', unit='B/s')
+            io['rd-sectors'] = reg.metric(
+                what='io-read-sectors', unit='sector/s')
+            io['rd-await'] = reg.metric(
+                what='io-read-await', unit='ms')
+
+            io['wr-op'] = reg.metric(
+                what='io-write-operations', unit='operation/s')
+            io['wr-merges'] = reg.metric(
+                what='io-write-merges', unit='merge/s')
+            io['wr-bytes'] = reg.metric(
+                what='io-write-bytes', unit='B/s')
+            io['wr-sectors'] = reg.metric(
+                what='io-write-sectors', unit='sector/s')
+            io['wr-await'] = reg.metric(
+                what='io-write-await', unit='ms')
+
+            io['avqz'] = reg.metric(
+                what='io-average-queue-size', unit='operation/s')
+            io['util'] = reg.metric(
+                what='io-utilization', unit='%')
+
+        self.last_seen = set(last.keys())
         self.last_time = time.time()
         self.last = last
 
-    def __call__(self):
+    def check_reload(self, disks):
+        seen = set(disks.keys())
+
+        if seen != self.last_seen:
+            self.reload_latch()
+
+        self.last_seen = seen
+
+    def update(self, disks):
         now = time.time()
         diff = now - self.last_time
         self.last_time = now
 
+        # not valid values can be set
         if diff <= 0:
+            for io in self.iostats.values():
+                for m in io.values():
+                    m.unset()
+
             return
 
-        s = self.read_disks()
+        for device, a in disks.items():
+            io = self.iostats.get(device, None)
+            b = self.last.get(device)
 
-        for device, s1 in s.items():
-            s2 = self.last.get(device)
-
-            if s2 is None:
+            if io is None or b is None:
                 continue
 
-            d = self.disk_stat(
-                *((a - b) / diff for (a, b) in zip(s1, s2)))
+            d = self.disk(*[(av - bv) / diff for av, bv in zip(a, b)])
 
-            for v, field in zip(d, self.DISK_STAT_FIELDS):
-                try:
-                    m = self.iostats[(device, field)]
-                except KeyError:
-                    continue
+            io['rd-op'].update(d.rd_ios)
+            io['rd-merges'].update(d.rd_merges)
+            io['rd-bytes'].update(d.rd_sectors * 512)
+            io['rd-sectors'].update(d.rd_sectors)
+            io['rd-await'].update(d.rd_ios)
 
-                m.update(v)
+            io['wr-op'].update(d.wr_ios)
+            io['wr-merges'].update(d.wr_merges)
+            io['wr-bytes'].update(d.wr_sectors * 512)
+            io['wr-sectors'].update(d.wr_sectors)
+            io['wr-await'].update(d.wr_ios)
 
-        self.last = s
+            io['avqz'].update(d.rq_tics)
+            io['util'].update(round(d.tot_tics / 1000, 2))
+
+    def __call__(self):
+        disks = self.read_disks()
+        self.check_reload(disks)
+        self.update(disks)
+        self.last = disks
 
 
 def setup(scope):
     #config = scope.require('config')
     platform = scope.require('platform')
+    reload_latch = scope.require('reload')
 
     if platform.is_linux():
         registry = scope.require('registry')
         last = LinuxIOStat.verify()
-        return LinuxIOStat(registry, last)
+        return LinuxIOStat(registry, last, reload_latch)
 
     raise Exception('unsupported platform')

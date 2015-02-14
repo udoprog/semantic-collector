@@ -3,11 +3,16 @@ import multiprocessing as mp
 
 class Registry(object):
     class Metric(object):
+        NaN = float('NaN')
+
         def __init__(self, value):
             self._v = value
 
         def update(self, value):
             self._v.value = value
+
+        def unset(self):
+            self._v.value = self.NaN
 
     class State(object):
         def __init__(self, value):
@@ -22,10 +27,31 @@ class Registry(object):
         def update(self, state):
             self._v.value = 1 if state else 0
 
+    class Scoped(object):
+        def __init__(self, parent, **base):
+            self._parent = parent
+            self._base = base
+
+        def metric(self, **tags):
+            tags = dict(tags)
+            tags.update(self._base)
+            return self._parent.metric(**tags)
+
+        def state(self, **tags):
+            tags = dict(tags)
+            tags.update(self._base)
+            return self._parent.state(**tags)
+
+        def scoped(self, **tags):
+            return Registry.Scoped(self, **tags)
+
     class Group(object):
         def __init__(self, registry):
             self._group = []
             self._registry = registry
+
+        def scoped(self, **tags):
+            return Registry.Scoped(self, **tags)
 
         def metric(self, **tags):
             n, m = self._registry.metric(**tags)
@@ -46,8 +72,6 @@ class Registry(object):
         def _injectchild(self):
             return Registry.Group(self._registry)
 
-    NaN = float('NaN')
-
     def __init__(self, **tags):
         self._p = 0
         self._vals = dict()
@@ -65,7 +89,7 @@ class Registry(object):
         t = dict(self._base)
         t.update(tags)
 
-        v = mp.Value('d', self.NaN)
+        v = mp.Value('d', Registry.Metric.NaN)
 
         self._vals[n] = v
         self._tags[n] = t

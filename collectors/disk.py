@@ -31,7 +31,7 @@ class LinuxDisk(object):
         disks = list()
 
         for m in cls.read_mounts():
-            disks.append((m.fs_file, cls.read_disk(m.fs_file)))
+            disks.append((m.fs_spec, m.fs_file, cls.read_disk(m.fs_file)))
 
         return disks
 
@@ -67,32 +67,47 @@ class LinuxDisk(object):
         rest = free - avail
         return cls.disk(total, free, avail, rest)
 
-    def __init__(self, registry, disks):
+    def __init__(self, registry, disks, reload_latch):
         self.last = disks
-        self.p = dict()
+        self.reload_latch = reload_latch
+        self.disks = dict()
         self.b = dict()
+        self.last_seen = set(f for (_, f, _) in disks)
 
-        for (f, d) in disks:
-            self.b[(f, 'total')] = registry.metric(
-                what='disk-total', disk=f, unit='B')
-            self.b[(f, 'free')] = registry.metric(
-                what='disk-free', disk=f, unit='B')
-            self.b[(f, 'avail')] = registry.metric(
-                what='disk-avail', disk=f, unit='B')
-            self.b[(f, 'rest')] = registry.metric(
-                what='disk-rest', disk=f, unit='B')
-            self.p[(f, 'free')] = registry.metric(
-                what='disk-free-percentage', disk=f, unit='%')
-            self.p[(f, 'avail')] = registry.metric(
-                what='disk-avail-percentage', disk=f, unit='%')
-            self.p[(f, 'rest')] = registry.metric(
-                what='disk-rest-percentage', disk=f, unit='%')
+        for (device, f, d) in disks:
+            if d.total <= 0:
+                continue
+
+            disk = self.disks[f] = dict()
+
+            disk['total'] = registry.metric(
+                what='disk-total', mountpoint=f, device=device, unit='B')
+            disk['free'] = registry.metric(
+                what='disk-free', mountpoint=f, device=device, unit='B')
+            disk['avail'] = registry.metric(
+                what='disk-avail', mountpoint=f, device=device, unit='B')
+            disk['rest'] = registry.metric(
+                what='disk-rest', mountpoint=f, device=device, unit='B')
+            disk['free-perc'] = registry.metric(
+                what='disk-free-percentage', mountpoint=f, device=device,
+                unit='%')
+            disk['avail-perc'] = registry.metric(
+                what='disk-avail-percentage', mountpoint=f, device=device,
+                unit='%')
+            disk['rest-perc'] = registry.metric(
+                what='disk-rest-percentage', mountpoint=f, device=device,
+                unit='%')
 
         self.update(disks)
 
     def update(self, disks):
-        for (f, d) in disks:
+        for (device, f, d) in disks:
             if d.total <= 0:
+                continue
+
+            disk = self.disks.get(f, None)
+
+            if disk is None:
                 continue
 
             total = float(d.total)
@@ -100,26 +115,37 @@ class LinuxDisk(object):
             avail = float(d.avail)
             rest = float(d.rest)
 
-            self.b[(f, 'total')].update(total)
-            self.b[(f, 'free')].update(free)
-            self.b[(f, 'avail')].update(avail)
-            self.b[(f, 'rest')].update(rest)
-            self.p[(f, 'free')].update(round(free / total, 2))
-            self.p[(f, 'avail')].update(round(avail / total, 2))
-            self.p[(f, 'rest')].update(round(rest / total, 2))
+            disk['total'].update(total)
+            disk['free'].update(free)
+            disk['avail'].update(avail)
+            disk['rest'].update(rest)
+            disk['free-perc'].update(round(free / total, 2))
+            disk['avail-perc'].update(round(avail / total, 2))
+            disk['rest-perc'].update(round(rest / total, 2))
+
+    def check_reload(self, disks):
+        # disk layout has change, ask to be reloaded.
+        seen = set(f for (_, f, _) in disks)
+
+        if seen != self.last_seen:
+            self.reload_latch()
+
+        self.last_seen = seen
 
     def __call__(self):
         disks = self.read_disks()
+        self.check_reload(disks)
         self.update(disks)
 
 
 def setup(scope):
     #config = scope.require('config')
     platform = scope.require('platform')
+    reload_latch = scope.require('reload')
 
     if platform.is_linux():
         registry = scope.require('registry')
         disks = LinuxDisk.verify()
-        return LinuxDisk(registry, disks)
+        return LinuxDisk(registry, disks, reload_latch)
 
     raise Exception('unsupported platform')

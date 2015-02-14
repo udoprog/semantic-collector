@@ -15,5 +15,7 @@ instance_config:
   max_forceful_attempts: 5
 
 collectors:
+  - type: disk
   - type: cpu
-    config: 12
+  - type: loadavg
+  - type: iostat

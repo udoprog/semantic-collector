@@ -8,28 +8,37 @@ log = logging.getLogger(__name__)
 
 
 class Collector(object):
+    class Latch(object):
+        def __init__(self):
+            self._b = mp.Value('b', 0)
+
+        def __call__(self):
+            self._b.value = 1
+
+        def is_set(self):
+            return self._b.value != 0
+
     class Instance(object):
-        def __init__(self, name, p, pipe, stat, injector, c):
+        def __init__(self, path, name, process, pipe,
+                     injector, reload_latch, config):
             # if not None, the current running process.
+            self._path = path
             self._name = name
-            self._p = p
+            self._process = process
             self._pipe = pipe
-            self._stat = stat
             self._injector = injector
-            self._c = c
+            self._reload_latch = reload_latch
+            self._c = config
+            self._stat = self._stat_path()
             self._runs = 0
             self._errors = 0
 
-        def stat(self):
-            return self._stat
-
         def is_alive(self):
-            return self._p.is_alive()
+            return self._process.is_alive()
 
         def collect(self, i):
             self._pipe.send(i)
             self._runs += 1
-            return i
 
         def errored(self, count=1):
             self._errors += count
@@ -38,13 +47,13 @@ class Collector(object):
             if graceful:
                 log.info("%s: terminate (graceful)", self)
                 self._pipe.send(None)
-                self._p.join(self._c.graceful_timeout)
+                self._process.join(self._c.graceful_timeout)
             else:
                 log.info("%s: terminate (forced)", self)
 
             attempt = 0
 
-            while self._p.exitcode is None:
+            while self._process.exitcode is None:
                 if attempt >= self._c.max_forceful_attempts:
                     raise Exception(
                         ('{0}: could not be terminated '
@@ -53,26 +62,45 @@ class Collector(object):
 
                 log.warn('%s: terminate (attempt %d of %d)', self, attempt,
                          self._c.max_forceful_attempts)
-                self._p.terminate()
-                self._p.join(self._c.forceful_timeout)
+                self._process.terminate()
+                self._process.join(self._c.forceful_timeout)
                 attempt += 1
 
-            log.info("%s: exited=%d", self.__str__(), self._p.exitcode)
+            log.info("%s: exited=%d", self.__str__(), self._process.exitcode)
 
             self._injector.free()
             self._pipe.close()
 
         def needs_recycling(self):
-            max_runs = (
-                self._c.max_runs is not None and self._runs > self._c.max_runs)
-            max_errors = (
-                self._c.max_errors is not None and
-                self._errors > self._c.max_errors)
+            return any(r is not None for r in self.reasons())
 
-            return (max_runs or max_errors)
+        def reasons(self):
+            """
+            Return a list of reasons for why this instance should be recycled.
+            """
+            if self._stat != self._stat_path():
+                yield 'source updated'
+
+            if self._c.max_runs is not None and \
+               self._runs > self._c.max_runs:
+                yield 'run limit'
+
+            if self._c.max_errors is not None and \
+               self._errors > self._c.max_errors:
+                yield 'error limit'
+
+            if self._reload_latch.is_set():
+                yield 'reloaded'
+
+        def _stat_path(self):
+            """
+            Perform a stat that only includes size and last modification time.
+            """
+            s = os.stat(self._path)
+            return (s.st_size, s.st_mtime)
 
         def __str__(self):
-            return "{0}:{1}".format(self._name, self._p.pid)
+            return "{0}:{1}".format(self._name, self._process.pid)
 
     def __init__(self, path, name, out, injector, instance_config):
         self._path = path
@@ -86,20 +114,12 @@ class Collector(object):
     def errored(self, count=1):
         self._instance.errored(count)
 
+    def check(self):
+        self._check_instance()
+
     def collect(self, i):
-        if self._instance is None:
-            self._instance = self._new_instance()
-
-        if not self._instance.is_alive():
-            log.error('%s: no longer alive, restarting',
-                      self._instance)
-            self.restart(False)
-
-        if self._is_outdated() or self._instance.needs_recycling():
-            log.info('%s: recycling', self._instance)
-            self.soft_restart(True)
-
-        return self._instance.collect(i)
+        self._check_instance()
+        self._instance.collect(i)
 
     def soft_restart(self, graceful=False):
         """
@@ -120,6 +140,7 @@ class Collector(object):
         except:
             self._failed_restart_timer = 10
             log.error('%s: failed to restart', self, exc_info=sys.exc_info())
+            return
 
         self._instance.terminate(graceful)
         self._instance = new_instance
@@ -141,15 +162,19 @@ class Collector(object):
         self._instance.terminate(graceful)
         self._instance = None
 
-    def _is_outdated(self):
-        """
-        Checks stat on the process file to see if it is newer than when the
-        process was loaded.
+    def _check_instance(self):
+        if self._instance is None:
+            self._instance = self._new_instance()
 
-        @return True if the current collector instance is outdated, False
-                otherwise.
-        """
-        return self._instance.stat() != limited_stat(self._path)
+        if not self._instance.is_alive():
+            log.error('%s: no longer alive, restarting',
+                      self._instance)
+            self.restart(False)
+
+        if self._instance.needs_recycling():
+            log.info('%s: recycling (%s)', self._instance,
+                     ', '.join(self._instance.reasons()))
+            self.soft_restart(True)
 
     def _compile(self):
         scope = dict()
@@ -161,8 +186,6 @@ class Collector(object):
         return scope
 
     def _new_instance(self):
-        stat = limited_stat(self._path)
-
         scope = self._compile()
 
         setup = scope.get('setup', None)
@@ -170,8 +193,15 @@ class Collector(object):
         if setup is None:
             raise Exception('{0}: no #setup method found'.format(self._path))
 
-        injector = self._injector.child()
-        collect = setup(injector)
+        reload_latch = Collector.Latch()
+
+        injector = self._injector.child(dict(reload=reload_latch))
+
+        try:
+            collect = setup(injector)
+        except:
+            injector.free()
+            raise
 
         if collect is None:
             raise Exception(
@@ -187,22 +217,15 @@ class Collector(object):
                        name=self._name)
         p.start()
 
-        return Collector.Instance(self._name, p, out, stat, injector,
-                                  self._instance_config)
+        return Collector.Instance(
+            self._path, self._name, p, out, injector, reload_latch,
+            self._instance_config)
 
     def __str__(self):
         if self._instance is not None:
             return str(self._instance)
 
         return '{0}:<no instance>'.format(self._name)
-
-
-def limited_stat(path):
-    """
-    Perform a stat that only includes size and last modification time.
-    """
-    s = os.stat(path)
-    return (s.st_size, s.st_mtime)
 
 
 def instance_loop(name, inp, out, start, stop, collect):

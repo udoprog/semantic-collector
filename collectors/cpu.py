@@ -58,13 +58,14 @@ class LinuxCPU(object):
         diff = sum(s) - sum(self.last)
 
         if diff <= 0:
-            return
+            for f in self.FIELDS:
+                self.cpu_usages[f].unset()
+        else:
+            diff = float(diff)
+            values = (round((a - b) / diff, 2) for (a, b) in zip(s, self.last))
 
-        diff = float(diff)
-        values = (round((a - b) / diff, 2) for (a, b) in zip(s, self.last))
-
-        for v, f in zip(values, self.FIELDS):
-            self.cpu_usages[f].update(v)
+            for v, f in zip(values, self.FIELDS):
+                self.cpu_usages[f].update(v)
 
         self.last = s
 

@@ -55,7 +55,14 @@ class Core(object):
             self._collectors = collectors
             self._registry = registry
 
-    def run_all(self):
+    def check_collectors(self):
+        for c in self._collectors:
+            try:
+                c.check()
+            except:
+                log.error('%s: failed to check', c, exc_info=sys.exc_info())
+
+    def collect_all(self):
         collects = dict()
 
         for c in self._collectors:
@@ -116,23 +123,36 @@ class Core(object):
 
         next_run = (time.time() + self._interval)
 
-        self.run_all()
+        self.collect_all()
 
         if self._signalled:
             return
 
         if log.isEnabledFor(logging.DEBUG):
-            for tags, v in self._registry.values:
-                log.debug("%s: %0.2f", tags, v)
-
-            for tags, v in self._registry.states:
-                log.debug("%s: %s", tags, v)
+            log.debug("%d value(s)", sum(1 for i in self._registry.values))
+            log.debug("%d state(s)", sum(1 for i in self._registry.states))
 
         diff = next_run - time.time()
 
         if diff > 0:
-            log.debug("sleep: %0.2fs", diff)
-            time.sleep(diff)
+            log.debug('sleep: %0.2fs', diff)
+
+            while diff > 0:
+                time.sleep(1.0)
+
+                if self._signalled:
+                    return
+
+                self.check_collectors()
+                diff = min(next_run - time.time(), diff - 1.0)
+
+            # sleep the rest of the time if necessary
+            tail = next_run - time.time()
+
+            if tail > 0:
+                log.debug('tail=%0.2fs', tail)
+                time.sleep(tail)
+
             return
 
         log.warn("Run took %0.2fs too long :(, sleeping %ds",
