@@ -9,26 +9,16 @@ log = logging.getLogger(__name__)
 
 class Collector(object):
     class Instance(object):
-        def __init__(self, name, p, pipe, stat, injector, **kw):
+        def __init__(self, name, p, pipe, stat, injector, c):
             # if not None, the current running process.
             self._name = name
             self._p = p
             self._pipe = pipe
-            self._runs = 0
-            self._errors = 0
             self._stat = stat
             self._injector = injector
-            # number of collections until the process will be recycled
-            self._max_runs = kw.get('max_runs', 10000)
-            # number of errors allowed until the process will be recycled
-            self._max_errors = kw.get('max_errors', 5)
-            # allowed timeout for a graceful shutdown to occur.
-            self._graceful_timeout = kw.get('graceful_timeout', 2.0)
-            # allowed timeout for a forceful shutdown to occur, failure to
-            # perform a forceful shutdown will crash the collector.
-            self._forceful_timeout = kw.get('forceful_timeout', 2.0)
-            # maximum number of forceful attempts allowed.
-            self._max_forceful_attempts = kw.get('max_forceful_attempts', 5)
+            self._c = c
+            self._runs = 0
+            self._errors = 0
 
         def stat(self):
             return self._stat
@@ -48,23 +38,23 @@ class Collector(object):
             if graceful:
                 log.info("%s: terminate (graceful)", self)
                 self._pipe.send(None)
-                self._p.join(self._graceful_timeout)
+                self._p.join(self._c.graceful_timeout)
             else:
                 log.info("%s: terminate (forced)", self)
 
             attempt = 0
 
             while self._p.exitcode is None:
-                if attempt >= self._max_forceful_attempts:
+                if attempt >= self._c.max_forceful_attempts:
                     raise Exception(
                         ('{0}: could not be terminated '
                          'after %d attempts').format(
-                             self, self._max_forceful_attempts))
+                             self, self._c.max_forceful_attempts))
 
                 log.warn('%s: terminate (attempt %d of %d)', self, attempt,
-                         self._max_forceful_attempts)
+                         self._c.max_forceful_attempts)
                 self._p.terminate()
-                self._p.join(self._forceful_timeout)
+                self._p.join(self._c.forceful_timeout)
                 attempt += 1
 
             log.info("%s: exited=%d", self.__str__(), self._p.exitcode)
@@ -74,10 +64,10 @@ class Collector(object):
 
         def needs_recycling(self):
             max_runs = (
-                self._max_runs is not None and self._runs > self._max_runs)
+                self._c.max_runs is not None and self._runs > self._c.max_runs)
             max_errors = (
-                self._max_errors is not None and
-                self._errors > self._max_errors)
+                self._c.max_errors is not None and
+                self._errors > self._c.max_errors)
 
             return (max_runs or max_errors)
 
@@ -86,10 +76,10 @@ class Collector(object):
 
     def __init__(self, path, name, out, injector, instance_config):
         self._path = path
+        self._name = name
         self._out = out
         self._injector = injector
         self._instance_config = instance_config
-        self._name = name
         self._inst = None
 
     def errored(self, count=1):
@@ -177,7 +167,7 @@ class Collector(object):
         p.start()
 
         return Collector.Instance(self._name, p, out, stat, injector,
-                                  **self._instance_config)
+                                  self._instance_config)
 
     def __str__(self):
         if self._inst is not None:

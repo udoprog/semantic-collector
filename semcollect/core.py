@@ -10,7 +10,7 @@ from .registry import Registry
 from .injector import Injector
 from .platform import Platform
 from .collector import Collector
-from .config import Root
+from .config import Root, ConfigException
 
 log = logging.getLogger(__name__)
 
@@ -137,45 +137,42 @@ class Core(object):
 
     def _setup(self):
         config = load_config(self._ns.config)
-        root = Root.load(config)
 
-        configured = config.get('collectors', {})
+        root = None
+
+        try:
+            root = Root.load(config)
+        except ConfigException as e:
+            log.error('%s: invalid: %s', self._ns.config, e)
+
+        if root is None:
+            raise Exception('{0}: could not load configuration'.format(
+                self._ns.config))
+
         registry = Registry(**config.get('tags', {}))
 
         components = dict(platform=Platform(), registry=registry)
         injector = Injector(components)
 
-        instance_config = config.get('instance_config', {})
-
         known = self._load_collectors()
 
-        collectors = self._build_collectors(
-            known, configured, injector, instance_config)
+        collectors = self._build_collectors(known, root, injector)
 
         return collectors, registry
 
-    def _build_collectors(self, known, configured, injector,
-                          instance_config):
+    def _build_collectors(self, known, root, injector):
         collectors = []
 
-        for c in configured:
-            c = dict(c)
-
-            type = c.pop('type', None)
-
-            if type is None:
-                raise Exception(
-                    "'type' is required in collector configuration")
-
-            path = known.get(type, None)
+        for c in root.collectors:
+            path = known.get(c.type, None)
 
             if path is None:
                 raise Exception(
-                    "'{0}' is not a known collector type".format(type))
+                    "'{0}' is not a known collector type".format(c.type))
 
-            child = injector.child(dict(config=c))
+            child = injector.child(dict(config=c.config))
             collector = Collector(
-                path, type, self._out, child, instance_config)
+                path, c.type, self._out, child, root.instance_config)
             collectors.append(collector)
 
         return collectors

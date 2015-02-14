@@ -16,3 +16,4 @@ instance_config:
 
 collectors:
   - type: cpu
+    config: 12
