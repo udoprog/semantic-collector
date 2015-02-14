@@ -18,13 +18,13 @@ You are also asking semantic-collector to load additional collectors from the
 
 For even more options, see ```--help```.
 
-## Collector
+## Collectors
 
 Collectors are the backbone of this project.
 The have the following properties.
 
-* ```#setup(scope)``` will be called by the main process, everything else will
-  be called in an isolated process.
+* ```setup(scope)``` will be called by the main process, everything else will
+  be run in an isolated process and intepreter.
 * All metrics are written to shared memory, and must be prepared in the
   ```setup``` phase.
   This is abstracted through the ```registry```.
@@ -50,3 +50,20 @@ def setup(scope):
     registry = scope.require('registry')
     return Collector(registry)
 ```
+
+### Bundled Collectors
+
+* [cpu](collectors/cpu.py)
+* [disk](collectors/disk.py)
+* [iostat](collectors/iostat.py)
+* [loadavg](collectors/loadavg.py)
+* [memory (TODO)](collectors/memory.py)
+* [net (TODO)](collectors/net.py)
+
+## Output
+
+Note: *To be implemented*
+
+Outputs decide where the collected metrics are sent.
+
+Output plugins run on the main loop of the collector.
