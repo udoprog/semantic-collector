@@ -81,13 +81,14 @@ class Collector(object):
         self._injector = injector
         self._instance_config = instance_config
         self._inst = None
+        self._failed_restart_timer = 0
 
     def errored(self, count=1):
         self._inst.errored(count)
 
     def collect(self, i):
         if self._inst is None:
-            self._inst = self._start()
+            self._inst = self._new_instance()
 
         if not self._inst.is_alive():
             log.error('%s: no longer alive, restarting',
@@ -96,16 +97,31 @@ class Collector(object):
 
         if self._is_outdated() or self._inst.needs_recycling():
             log.info('%s: recycling', self._inst)
-            self.restart(True)
+            self.safe_restart(True)
 
         return self._inst.collect(i)
+
+    def safe_restart(self, graceful=False):
+        # do not restart while timer is active
+        if self._failed_restart_timer > 0:
+            self._failed_restart_timer -= 1
+            return
+
+        try:
+            self.restart(graceful)
+        except:
+            self._failed_restart_timer = 10
+            log.error('%s: failed to restart', self, exc_info=sys.exc_info())
 
     def restart(self, graceful=False):
         if self._inst is None:
             raise Exception('instance not running')
 
+        # create a new instance before terminating the old one so that the old
+        # one stays around if a new instance could not be created.
+        new_instance = self._new_instance()
         self._inst.terminate(graceful)
-        self._inst = self._start()
+        self._inst = new_instance
 
     def stop(self):
         """
@@ -137,9 +153,7 @@ class Collector(object):
 
         return scope
 
-    def _start(self):
-        log.info('%s: starting', self)
-
+    def _new_instance(self):
         stat = limited_stat(self._path)
 
         scope = self._compile()
