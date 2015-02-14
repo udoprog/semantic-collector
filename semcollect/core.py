@@ -18,8 +18,12 @@ TASK_MOD = 2 ** 20
 
 
 class Core(object):
-    def __init__(self, ns):
-        self._ns = ns
+    def __init__(self, **kw):
+        self._timeout = kw.get('timeout', 10)
+        self._interval = kw.get('interval', 30)
+        self._backoff = kw.get('backoff', 10)
+        self._config_path = kw.get('config', None)
+        self._collector_paths = kw.get('collectors', [])
         self._out = mp.Queue()
         self._collectors = None
         self._registry = None
@@ -66,7 +70,7 @@ class Core(object):
 
             collects[i] = c
 
-        time_left = self._ns.timeout
+        time_left = self._timeout
         then = time.time()
 
         while len(collects) > 0:
@@ -110,7 +114,7 @@ class Core(object):
     def run_once(self):
         self._signalled = False
 
-        next_run = (time.time() + self._ns.interval)
+        next_run = (time.time() + self._interval)
 
         self.run_all()
 
@@ -132,22 +136,22 @@ class Core(object):
             return
 
         log.warn("Run took %0.2fs too long :(, sleeping %ds",
-                 -diff, self._ns.backoff)
-        time.sleep(self._ns.backoff)
+                 -diff, self._backoff)
+        time.sleep(self._backoff)
 
     def _setup(self):
-        config = load_config(self._ns.config)
+        config = load_config(self._config_path)
 
         root = None
 
         try:
             root = Root.load(config)
         except ConfigException as e:
-            log.error('%s: invalid: %s', self._ns.config, e)
+            log.error('%s: invalid: %s', self._config_path, e)
 
         if root is None:
             raise Exception('{0}: could not load configuration'.format(
-                self._ns.config))
+                self._config_path))
 
         registry = Registry(**config.get('tags', {}))
 
@@ -180,7 +184,7 @@ class Core(object):
     def _load_collectors(self):
         collectors = dict()
 
-        for p in self._ns.collectors:
+        for p in self._collector_paths:
             if not os.path.isdir(p):
                 continue
 

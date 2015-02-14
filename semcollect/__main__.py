@@ -97,7 +97,8 @@ def main(args):
 
     log.info("pid=%d", os.getpid())
 
-    core = Core(ns)
+    core = Core(timeout=ns.timeout, interval=ns.interval, backoff=ns.backoff,
+                config=ns.config, collectors=ns.collectors)
     core.setup()
 
     signal.signal(signal.SIGHUP, handle_signal_reload)
