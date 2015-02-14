@@ -80,59 +80,66 @@ class Collector(object):
         self._out = out
         self._injector = injector
         self._instance_config = instance_config
-        self._inst = None
+        self._instance = None
         self._failed_restart_timer = 0
 
     def errored(self, count=1):
-        self._inst.errored(count)
+        self._instance.errored(count)
 
     def collect(self, i):
-        if self._inst is None:
-            self._inst = self._new_instance()
+        if self._instance is None:
+            self._instance = self._new_instance()
 
-        if not self._inst.is_alive():
+        if not self._instance.is_alive():
             log.error('%s: no longer alive, restarting',
-                      self._inst)
+                      self._instance)
             self.restart(False)
 
-        if self._is_outdated() or self._inst.needs_recycling():
-            log.info('%s: recycling', self._inst)
-            self.safe_restart(True)
+        if self._is_outdated() or self._instance.needs_recycling():
+            log.info('%s: recycling', self._instance)
+            self.soft_restart(True)
 
-        return self._inst.collect(i)
+        return self._instance.collect(i)
 
-    def safe_restart(self, graceful=False):
+    def soft_restart(self, graceful=False):
+        """
+        A restart implementation that tries to keep the old instance alive
+        until a new one has come up.
+
+        It also implements back-off using a timer to avoid trying to restart a
+        broken collector too often.
+        """
+
         # do not restart while timer is active
         if self._failed_restart_timer > 0:
             self._failed_restart_timer -= 1
             return
 
         try:
-            self.restart(graceful)
+            new_instance = self._new_instance()
         except:
             self._failed_restart_timer = 10
             log.error('%s: failed to restart', self, exc_info=sys.exc_info())
 
+        self._instance.terminate(graceful)
+        self._instance = new_instance
+
     def restart(self, graceful=False):
-        if self._inst is None:
-            raise Exception('instance not running')
+        if self._instance is not None:
+            self._instance.terminate(graceful)
+            self._instance = None
 
-        # create a new instance before terminating the old one so that the old
-        # one stays around if a new instance could not be created.
-        new_instance = self._new_instance()
-        self._inst.terminate(graceful)
-        self._inst = new_instance
+        self._instance = self._new_instance()
 
-    def stop(self):
+    def stop(self, graceful=True):
         """
         Stop the collector.
         """
-        if self._inst is None:
-            raise Exception('{0}: no instance running'.format(self))
+        if self._instance is None:
+            return
 
-        self._inst.terminate(True)
-        self._inst = None
-        self._injector.free()
+        self._instance.terminate(graceful)
+        self._instance = None
 
     def _is_outdated(self):
         """
@@ -142,7 +149,7 @@ class Collector(object):
         @return True if the current collector instance is outdated, False
                 otherwise.
         """
-        return self._inst.stat() != limited_stat(self._path)
+        return self._instance.stat() != limited_stat(self._path)
 
     def _compile(self):
         scope = dict()
@@ -184,8 +191,8 @@ class Collector(object):
                                   self._instance_config)
 
     def __str__(self):
-        if self._inst is not None:
-            return str(self._inst)
+        if self._instance is not None:
+            return str(self._instance)
 
         return '{0}:<no instance>'.format(self._name)
 
